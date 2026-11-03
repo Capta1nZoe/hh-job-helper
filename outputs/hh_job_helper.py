@@ -197,8 +197,8 @@ class App(tk.Tk):
         menu.add_separator()
         menu.add_command(label="Выделить всё", command=lambda: widget.selection_range(0, "end"))
         widget.bind("<Button-3>", lambda event: (widget.focus_set(), menu.tk_popup(event.x_root, event.y_root)))
-        widget.bind("<Control-v>", lambda _event: (widget.event_generate("<<Paste>>"), "break"))
-        widget.bind("<Control-V>", lambda _event: (widget.event_generate("<<Paste>>"), "break"))
+        # ttk.Entry already implements Ctrl+V. Do not synthesize <<Paste>> here:
+        # allowing both this handler and Tk's class binding duplicated pasted text.
 
     def _load(self):
         try:
