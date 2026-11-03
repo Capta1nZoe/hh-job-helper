@@ -8,6 +8,7 @@ import threading
 import urllib.parse
 import urllib.request
 import urllib.error
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
@@ -24,6 +25,19 @@ SETTINGS = APP_DIR / "settings.json"
 UA = "HHJobHelper/0.1 (personal job search prototype)"
 
 
+def urlopen_with_retry(req, timeout):
+    """Retry brief network/TLS interruptions before reporting an API error."""
+    for attempt in range(3):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == 2:
+                raise
+            time.sleep(0.5 * (2 ** attempt))
+
+
 def fetch_vacancies(params, token=None):
     query = urllib.parse.urlencode(params, doseq=True)
     headers = {"User-Agent": UA, "Accept": "application/json"}
@@ -31,7 +45,7 @@ def fetch_vacancies(params, token=None):
         headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request("https://api.hh.ru/vacancies?" + query, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=25) as response:
+        with urlopen_with_retry(req, timeout=25) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", "replace")
@@ -47,7 +61,7 @@ def find_area_id(name):
     """Resolve a Russian city name to the area ID used by the HH search API."""
     req = urllib.request.Request("https://api.hh.ru/areas",
                                  headers={"User-Agent": UA, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=20) as response:
+    with urlopen_with_retry(req, timeout=20) as response:
         tree = json.loads(response.read().decode("utf-8"))
     wanted = name.strip().casefold()
     def walk(nodes):
