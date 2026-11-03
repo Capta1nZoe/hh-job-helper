@@ -12,6 +12,11 @@ from tkinter import ttk, messagebox
 from pathlib import Path
 import ctypes
 from ctypes import wintypes
+import secrets
+import hashlib
+import base64
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 APP_DIR = Path.home() / "AppData" / "Local" / "HHJobHelper"
 SETTINGS = APP_DIR / "settings.json"
@@ -53,6 +58,14 @@ def telegram_call(token, method, payload=None):
     if not result.get("ok"):
         raise RuntimeError(result.get("description", "Ошибка Telegram API"))
     return result.get("result")
+
+
+def hh_request(path, token):
+    req = urllib.request.Request("https://api.hh.ru" + path,
+                                 headers={"User-Agent": UA, "Accept": "application/json",
+                                          "Authorization": "Bearer " + token})
+    with urllib.request.urlopen(req, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def credential_write(target, secret):
@@ -150,6 +163,7 @@ class App(tk.Tk):
         self.hh_secret = ttk.Entry(connect, show="•", width=25); self._enable_paste(self.hh_secret); self.hh_secret.pack(fill="x", pady=(3, 8))
         ttk.Button(connect, text="Сохранить подключения", command=self.save_connections).pack(fill="x", pady=(0, 4))
         ttk.Button(connect, text="Подключить / проверить Telegram", command=self.connect_telegram).pack(fill="x")
+        ttk.Button(connect, text="Войти через hh.ru", command=self.connect_hh).pack(fill="x", pady=(4, 0))
         right = ttk.Frame(body); right.pack(side="left", fill="both", expand=True)
         cards = ttk.Frame(right); cards.pack(fill="x", pady=(0, 12))
         self.count = tk.StringVar(value="0 вакансий")
@@ -208,6 +222,59 @@ class App(tk.Tk):
             return json.loads(SETTINGS.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
+
+    def connect_hh(self):
+        client_id = self.hh_client.get().strip()
+        client_secret = self.hh_secret.get().strip()
+        if not client_id or not client_secret:
+            messagebox.showwarning("hh.ru", "Заполните Client ID и Client Secret, затем сохраните подключения.")
+            return
+        self.save_connections()
+        redirect_uri = "http://localhost:8765/oauth/callback"
+        verifier = secrets.token_urlsafe(48)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+        state = secrets.token_urlsafe(24)
+        app = self
+        class Callback(BaseHTTPRequestHandler):
+            def do_GET(self):
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                if query.get("state", [None])[0] != state:
+                    self.send_response(400); self.end_headers(); self.wfile.write("Проверка авторизации не пройдена.".encode()); return
+                code = query.get("code", [None])[0]
+                if not code:
+                    self.send_response(400); self.end_headers(); self.wfile.write("hh.ru не вернул код авторизации.".encode()); return
+                try:
+                    payload = urllib.parse.urlencode({"grant_type":"authorization_code", "client_id":client_id,
+                        "client_secret":client_secret, "code":code, "redirect_uri":redirect_uri,
+                        "code_verifier":verifier}).encode()
+                    req = urllib.request.Request("https://api.hh.ru/token", data=payload,
+                        headers={"Content-Type":"application/x-www-form-urlencoded", "User-Agent":UA})
+                    with urllib.request.urlopen(req, timeout=20) as response:
+                        tokens = json.loads(response.read().decode("utf-8"))
+                    who = hh_request("/me", tokens["access_token"])
+                    if who.get("is_applicant") is False and who.get("auth_type") != "applicant":
+                        raise ValueError("Выполнен вход не как соискатель hh.ru.")
+                    credential_write("HHJobHelper/hh_access_token", tokens["access_token"])
+                    credential_write("HHJobHelper/hh_refresh_token", tokens.get("refresh_token", ""))
+                    app.hh_identity = who
+                    self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
+                    self.wfile.write("<h2>hh.ru подключён. Можно закрыть это окно.</h2>".encode())
+                    app.after(0, lambda: app.note.set("hh.ru подключён: авторизация соискателя подтверждена."))
+                except Exception as exc:
+                    message = str(exc)
+                    self.send_response(500); self.end_headers(); self.wfile.write(message.encode("utf-8", "replace"))
+                    app.after(0, lambda: app.note.set("Ошибка авторизации hh.ru: " + message))
+            def log_message(self, *_args):
+                return
+        try:
+            server = HTTPServer(("localhost", 8765), Callback)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            params = urllib.parse.urlencode({"response_type":"code", "client_id":client_id, "state":state,
+                "redirect_uri":redirect_uri, "code_challenge":challenge, "code_challenge_method":"S256"})
+            webbrowser.open("https://hh.ru/oauth/authorize?" + params)
+            self.note.set("Завершите вход и разрешите доступ в открывшемся окне hh.ru.")
+        except Exception as exc:
+            messagebox.showerror("hh.ru", f"Не удалось запустить OAuth callback: {exc}")
 
     def connect_telegram(self):
         token = self.tg_token.get().strip()
