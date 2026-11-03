@@ -26,6 +26,24 @@ def fetch_vacancies(params):
         return json.loads(response.read().decode("utf-8"))
 
 
+def find_area_id(name):
+    """Resolve a Russian city name to the area ID used by the HH search API."""
+    req = urllib.request.Request("https://api.hh.ru/areas",
+                                 headers={"User-Agent": UA, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as response:
+        tree = json.loads(response.read().decode("utf-8"))
+    wanted = name.strip().casefold()
+    def walk(nodes):
+        for node in nodes:
+            if node.get("name", "").casefold() == wanted:
+                return node.get("id")
+            found = walk(node.get("areas", []))
+            if found:
+                return found
+        return None
+    return walk(tree)
+
+
 def credential_write(target, secret):
     """Store a secret in Windows Credential Manager (Generic Credential)."""
     if not secret:
@@ -73,6 +91,7 @@ class App(tk.Tk):
         self.configure(bg="#f4f6f8")
         self._build()
         self._load()
+        self.after(2000, self._schedule_search)
 
     def _build(self):
         style = ttk.Style(self)
@@ -201,11 +220,15 @@ class App(tk.Tk):
 
     def _do_search(self):
         try:
-            params = {"text": self.role.get().strip(), "area": "1", "per_page": "50", "page": "0",
+            city = self.area.get().strip() or "Москва"
+            area_id = find_area_id(city)
+            if not area_id:
+                raise ValueError(f"Не нашёл город «{city}» в справочнике hh.ru")
+            params = {"text": self.role.get().strip(), "area": area_id, "per_page": "50", "page": "0",
                       "order_by": "publication_time", "host": "hh.ru"}
             salary = self.salary.get().strip()
             if salary.isdigit(): params["salary"] = salary; params["currency"] = "RUR"
-            if self.remote.get(): params["schedule"] = "remote"
+            if self.remote.get() and not self.hybrid.get(): params["schedule"] = "remote"
             data = fetch_vacancies(params)
             self.after(0, lambda: self._show(data.get("items", [])))
         except Exception as exc:
@@ -231,6 +254,17 @@ class App(tk.Tk):
     def _error(self, message):
         self.state.set("Не удалось выполнить поиск")
         messagebox.showerror("Ошибка API hh.ru", message)
+
+    def _schedule_search(self):
+        try:
+            minutes = max(1, int(self.interval.get()))
+        except ValueError:
+            minutes = 60
+        self.after(minutes * 60 * 1000, self._scheduled_search)
+
+    def _scheduled_search(self):
+        self.search()
+        self._schedule_search()
 
     def open_job(self, _event):
         import webbrowser
