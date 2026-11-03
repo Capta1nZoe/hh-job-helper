@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 APP_DIR = Path.home() / "AppData" / "Local" / "HHJobHelper"
 SETTINGS = APP_DIR / "settings.json"
-UA = "HHJobHelper/0.1 (personal job search prototype)"
+UA = "HHJobHelper/0.1 (captainzoe.work@gmail.com)"
 
 
 def urlopen_with_retry(req, timeout):
