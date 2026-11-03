@@ -347,8 +347,9 @@ class App(tk.Tk):
 
     def save(self):
         APP_DIR.mkdir(parents=True, exist_ok=True)
-        data = {"text": self.role.get(), "area": self.area.get(), "salary": self.salary.get(),
-                "interval": self.interval.get(), "remote": self.remote.get(), "hybrid": self.hybrid.get()}
+        data = self._read_settings()
+        data.update({"text": self.role.get(), "area": self.area.get(), "salary": self.salary.get(),
+                     "interval": self.interval.get(), "remote": self.remote.get(), "hybrid": self.hybrid.get()})
         SETTINGS.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         self.note.set("Настройки сохранены на этом компьютере.")
 
