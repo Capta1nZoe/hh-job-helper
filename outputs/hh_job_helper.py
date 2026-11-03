@@ -151,6 +151,9 @@ class App(tk.Tk):
         ttk.Label(form, text="минут", foreground="#718092").pack(anchor="w")
         ttk.Button(form, text="Искать сейчас", command=self.search).pack(fill="x", pady=(18, 6))
         ttk.Button(form, text="Сохранить настройки", command=self.save).pack(fill="x")
+        ttk.Button(form, text="Загрузить моё резюме из hh.ru", command=self.load_resume).pack(fill="x", pady=(6, 0))
+        self.resume_status = tk.StringVar(value="Резюме hh.ru не загружено")
+        ttk.Label(form, textvariable=self.resume_status, foreground="#536273", wraplength=235).pack(anchor="w", pady=(5, 0))
         ttk.Label(form, text="Для связи с ботом сначала отправьте ему /start.",
                   foreground="#718092", wraplength=220).pack(anchor="w", pady=(16, 0))
         connect = ttk.LabelFrame(form, text="Подключения (локально)", padding=10)
@@ -216,6 +219,7 @@ class App(tk.Tk):
         except (OSError, ValueError):
             pass
         self.chat_id = self._read_settings().get("telegram_chat_id")
+        self.resume_status.set(self._read_settings().get("resume_name", "Резюме hh.ru не загружено"))
 
     def _read_settings(self):
         try:
@@ -283,6 +287,36 @@ class App(tk.Tk):
             self.note.set("Завершите вход и разрешите доступ в открывшемся окне hh.ru.")
         except Exception as exc:
             messagebox.showerror("hh.ru", f"Не удалось запустить OAuth callback: {exc}")
+
+    def load_resume(self):
+        token = credential_read("HHJobHelper/hh_access_token")
+        if not token:
+            messagebox.showwarning("hh.ru", "Сначала выполните вход через hh.ru.")
+            return
+        self.resume_status.set("Загружаю список резюме…")
+        threading.Thread(target=self._load_resume_worker, args=(token,), daemon=True).start()
+
+    def _load_resume_worker(self, token):
+        try:
+            result = hh_request("/resumes/mine", token)
+            resumes = result.get("items", []) if isinstance(result, dict) else result
+            if not resumes:
+                raise ValueError("hh.ru не вернул доступных резюме.")
+            resume = resumes[0]
+            resume_id = str(resume.get("id", ""))
+            name = resume.get("title") or resume.get("name") or "Резюме hh.ru"
+            if not resume_id:
+                raise ValueError("В ответе hh.ru не найден ID резюме.")
+            settings = self._read_settings()
+            settings["resume_id"] = resume_id
+            settings["resume_name"] = name
+            SETTINGS.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.after(0, lambda: self.resume_status.set(f"Выбрано: {name}"))
+            self.after(0, lambda: self.note.set("Резюме загружено. Его можно использовать для дальнейшего сопоставления вакансий."))
+        except Exception as exc:
+            message = str(exc)
+            self.after(0, lambda: self.resume_status.set("Не удалось загрузить резюме"))
+            self.after(0, lambda: self.note.set("Ошибка загрузки резюме: " + message))
 
     def connect_telegram(self):
         token = self.tg_token.get().strip()
