@@ -25,7 +25,7 @@ UA = "HHJobHelper/0.1 (personal job search prototype)"
 
 
 def fetch_vacancies(params, token=None):
-    query = urllib.parse.urlencode(params)
+    query = urllib.parse.urlencode(params, doseq=True)
     headers = {"User-Agent": UA, "Accept": "application/json"}
     if token:
         headers["Authorization"] = "Bearer " + token
@@ -162,9 +162,10 @@ class App(tk.Tk):
         self.area = self._entry(form, "Город hh.ru", "Москва")
         self.salary = self._entry(form, "Зарплата от, ₽ (необязательно)", "")
         ttk.Label(form, text="Формат работы").pack(anchor="w", pady=(9, 3))
-        self.remote = tk.BooleanVar(value=True); self.hybrid = tk.BooleanVar(value=True)
+        self.remote = tk.BooleanVar(value=True); self.hybrid = tk.BooleanVar(value=True); self.onsite = tk.BooleanVar(value=True)
         ttk.Checkbutton(form, text="Удалённо", variable=self.remote).pack(anchor="w")
         ttk.Checkbutton(form, text="Гибрид", variable=self.hybrid).pack(anchor="w")
+        ttk.Checkbutton(form, text="Очно в указанном городе", variable=self.onsite).pack(anchor="w")
         ttk.Label(form, text="Интервал автоматического поиска").pack(anchor="w", pady=(12, 3))
         self.interval = tk.StringVar(value="60")
         ttk.Combobox(form, textvariable=self.interval, values=("30", "60", "120", "360", "1440"),
@@ -227,7 +228,7 @@ class App(tk.Tk):
             data = json.loads(SETTINGS.read_text(encoding="utf-8"))
             self.role.insert(0, data.get("text", "")); self.area.delete(0, "end"); self.area.insert(0, data.get("area", "Москва"))
             self.salary.insert(0, data.get("salary", "")); self.interval.set(str(data.get("interval", 60)))
-            self.remote.set(data.get("remote", True)); self.hybrid.set(data.get("hybrid", True))
+            self.remote.set(data.get("remote", True)); self.hybrid.set(data.get("hybrid", True)); self.onsite.set(data.get("onsite", True))
             self.threshold.set(data.get("threshold", "30%"))
         except (OSError, ValueError):
             pass
@@ -342,7 +343,7 @@ class App(tk.Tk):
         data = self._read_settings()
         data.update({"text": self.role.get(), "area": self.area.get(), "salary": self.salary.get(),
                      "interval": self.interval.get(), "remote": self.remote.get(), "hybrid": self.hybrid.get(),
-                     "threshold": self.threshold.get()})
+                     "onsite": self.onsite.get(), "threshold": self.threshold.get()})
         SETTINGS.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         self.note.set("Настройки сохранены на этом компьютере.")
 
@@ -377,7 +378,11 @@ class App(tk.Tk):
                       "order_by": "publication_time", "host": "hh.ru"}
             salary = self.salary.get().strip()
             if salary.isdigit(): params["salary"] = salary; params["currency"] = "RUR"
-            if self.remote.get() and not self.hybrid.get(): params["schedule"] = "remote"
+            work_formats = []
+            if self.onsite.get(): work_formats.append("ON_SITE")
+            if self.remote.get(): work_formats.append("REMOTE")
+            if self.hybrid.get(): work_formats.append("HYBRID")
+            if work_formats: params["work_format"] = work_formats
             token = credential_read("HHJobHelper/hh_access_token")
             if not token:
                 raise ValueError("Сначала подключите аккаунт через «Войти через hh.ru», затем повторите поиск.")
