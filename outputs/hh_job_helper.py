@@ -24,12 +24,23 @@ SETTINGS = APP_DIR / "settings.json"
 UA = "HHJobHelper/0.1 (personal job search prototype)"
 
 
-def fetch_vacancies(params):
+def fetch_vacancies(params, token=None):
     query = urllib.parse.urlencode(params)
-    req = urllib.request.Request("https://api.hh.ru/vacancies?" + query,
-                                 headers={"User-Agent": UA, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=25) as response:
-        return json.loads(response.read().decode("utf-8"))
+    headers = {"User-Agent": UA, "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = urllib.request.Request("https://api.hh.ru/vacancies?" + query, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=25) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        try:
+            details = json.loads(raw)
+            reason = details.get("description") or details.get("errors") or details.get("oauth_error") or raw
+        except ValueError:
+            reason = raw
+        raise RuntimeError(f"HTTP {exc.code}: {reason}") from None
 
 
 def find_area_id(name):
@@ -367,7 +378,10 @@ class App(tk.Tk):
             salary = self.salary.get().strip()
             if salary.isdigit(): params["salary"] = salary; params["currency"] = "RUR"
             if self.remote.get() and not self.hybrid.get(): params["schedule"] = "remote"
-            data = fetch_vacancies(params)
+            token = credential_read("HHJobHelper/hh_access_token")
+            if not token:
+                raise ValueError("Сначала подключите аккаунт через «Войти через hh.ru», затем повторите поиск.")
+            data = fetch_vacancies(params, token)
             self.after(0, lambda: self._show(data.get("items", [])))
         except Exception as exc:
             self.after(0, lambda: self._error(str(exc)))
