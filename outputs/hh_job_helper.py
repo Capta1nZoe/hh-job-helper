@@ -161,9 +161,9 @@ class App(tk.Tk):
         ttk.Label(form, text="минут", foreground="#718092").pack(anchor="w")
         ttk.Button(form, text="Искать сейчас", command=self.search).pack(fill="x", pady=(18, 6))
         ttk.Button(form, text="Сохранить настройки", command=self.save).pack(fill="x")
-        ttk.Button(form, text="Загрузить моё резюме из hh.ru", command=self.load_resume).pack(fill="x", pady=(6, 0))
-        self.resume_status = tk.StringVar(value="Резюме hh.ru не загружено")
-        ttk.Label(form, textvariable=self.resume_status, foreground="#536273", wraplength=235).pack(anchor="w", pady=(5, 0))
+        ttk.Label(form, text="Совпадение названия от").pack(anchor="w", pady=(10, 3))
+        self.threshold = tk.StringVar(value="30%")
+        ttk.Combobox(form, textvariable=self.threshold, values=("0%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%"), state="readonly").pack(fill="x")
         ttk.Label(form, text="Для связи с ботом сначала отправьте ему /start.",
                   foreground="#718092", wraplength=220).pack(anchor="w", pady=(16, 0))
         connect = ttk.LabelFrame(form, text="Подключения (локально)", padding=10)
@@ -181,12 +181,13 @@ class App(tk.Tk):
         cards = ttk.Frame(right); cards.pack(fill="x", pady=(0, 12))
         self.count = tk.StringVar(value="0 вакансий")
         ttk.Label(cards, textvariable=self.count, font=("Segoe UI", 12, "bold")).pack(side="left")
-        ttk.Label(cards, text="Порог соответствия резюме будет подключён после OAuth",
+        ttk.Label(cards, text="Совпадение считается по словам в названии вакансии",
                   foreground="#718092").pack(side="right")
-        columns = ("job", "salary", "format", "company", "published")
+        columns = ("job", "salary", "format", "company", "match", "published")
         self.table = ttk.Treeview(right, columns=columns, show="headings")
         for col, title, width in (("job", "Вакансия", 240), ("salary", "Зарплата", 130),
                                   ("format", "Место / формат", 145), ("company", "Компания", 180),
+                                  ("match", "Совпадение", 100),
                                   ("published", "Опубликована", 120)):
             self.table.heading(col, text=title); self.table.column(col, width=width, anchor="w")
         self.table.pack(fill="both", expand=True)
@@ -216,6 +217,7 @@ class App(tk.Tk):
             self.role.insert(0, data.get("text", "")); self.area.delete(0, "end"); self.area.insert(0, data.get("area", "Москва"))
             self.salary.insert(0, data.get("salary", "")); self.interval.set(str(data.get("interval", 60)))
             self.remote.set(data.get("remote", True)); self.hybrid.set(data.get("hybrid", True))
+            self.threshold.set(data.get("threshold", "30%"))
         except (OSError, ValueError):
             pass
         try:
@@ -229,7 +231,6 @@ class App(tk.Tk):
         except (OSError, ValueError):
             pass
         self.chat_id = self._read_settings().get("telegram_chat_id")
-        self.resume_status.set(self._read_settings().get("resume_name", "Резюме hh.ru не загружено"))
 
     def _read_settings(self):
         try:
@@ -298,36 +299,6 @@ class App(tk.Tk):
         except Exception as exc:
             messagebox.showerror("hh.ru", f"Не удалось запустить OAuth callback: {exc}")
 
-    def load_resume(self):
-        token = credential_read("HHJobHelper/hh_access_token")
-        if not token:
-            messagebox.showwarning("hh.ru", "Сначала выполните вход через hh.ru.")
-            return
-        self.resume_status.set("Загружаю список резюме…")
-        threading.Thread(target=self._load_resume_worker, args=(token,), daemon=True).start()
-
-    def _load_resume_worker(self, token):
-        try:
-            result = hh_request("/resumes/mine", token)
-            resumes = result.get("items", []) if isinstance(result, dict) else result
-            if not resumes:
-                raise ValueError("hh.ru не вернул доступных резюме.")
-            resume = resumes[0]
-            resume_id = str(resume.get("id", ""))
-            name = resume.get("title") or resume.get("name") or "Резюме hh.ru"
-            if not resume_id:
-                raise ValueError("В ответе hh.ru не найден ID резюме.")
-            settings = self._read_settings()
-            settings["resume_id"] = resume_id
-            settings["resume_name"] = name
-            SETTINGS.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
-            self.after(0, lambda: self.resume_status.set(f"Выбрано: {name}"))
-            self.after(0, lambda: self.note.set("Резюме загружено. Его можно использовать для дальнейшего сопоставления вакансий."))
-        except Exception as exc:
-            message = str(exc)
-            self.after(0, lambda: self.resume_status.set("Не удалось загрузить резюме"))
-            self.after(0, lambda: self.note.set("Ошибка загрузки резюме: " + message))
-
     def connect_telegram(self):
         token = self.tg_token.get().strip()
         if not token:
@@ -359,7 +330,8 @@ class App(tk.Tk):
         APP_DIR.mkdir(parents=True, exist_ok=True)
         data = self._read_settings()
         data.update({"text": self.role.get(), "area": self.area.get(), "salary": self.salary.get(),
-                     "interval": self.interval.get(), "remote": self.remote.get(), "hybrid": self.hybrid.get()})
+                     "interval": self.interval.get(), "remote": self.remote.get(), "hybrid": self.hybrid.get(),
+                     "threshold": self.threshold.get()})
         SETTINGS.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         self.note.set("Настройки сохранены на этом компьютере.")
 
@@ -401,6 +373,11 @@ class App(tk.Tk):
             self.after(0, lambda: self._error(str(exc)))
 
     def _show(self, items):
+        terms = {term.casefold() for term in self.role.get().split() if len(term) > 1}
+        try:
+            threshold = int(self.threshold.get().rstrip("%"))
+        except ValueError:
+            threshold = 0
         previous = set(self._read_settings().get("seen_vacancies", []))
         current_ids = {str(item.get("id")) for item in items if item.get("id")}
         new_items = [item for item in items if str(item.get("id")) not in previous]
@@ -411,6 +388,11 @@ class App(tk.Tk):
         SETTINGS.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
         self.table.delete(*self.table.get_children())
         for item in items:
+            name = item.get("name", "")
+            title_terms = {term.casefold().strip(".,:;()[]{}!?\"'") for term in name.split()}
+            match = round(100 * len(terms & title_terms) / len(terms)) if terms else 100
+            if match < threshold:
+                continue
             salary = item.get("salary") or {}
             pay = "Не указана"
             if salary:
@@ -420,8 +402,8 @@ class App(tk.Tk):
             schedule = (item.get("schedule") or {}).get("name", "")
             employer = (item.get("employer") or {}).get("name", "")
             pub = (item.get("published_at") or "")[:10]
-            self.table.insert("", "end", values=(item.get("name", ""), pay, f"{area} · {schedule}", employer, pub), tags=(item.get("alternate_url", ""),))
-        self.count.set(f"{len(items)} вакансий")
+            self.table.insert("", "end", values=(name, pay, f"{area} · {schedule}", employer, f"{match}%", pub), tags=(item.get("alternate_url", ""),))
+        self.count.set(f"{len(self.table.get_children())} вакансий")
         self.state.set("Поиск завершён · реальная выдача hh.ru")
         self.note.set("Отклики не отправлялись. Дважды щёлкните строку для просмотра вакансии.")
 
