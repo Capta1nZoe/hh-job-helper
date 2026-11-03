@@ -44,6 +44,17 @@ def find_area_id(name):
     return walk(tree)
 
 
+def telegram_call(token, method, payload=None):
+    body = json.dumps(payload or {}).encode("utf-8")
+    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/{method}", data=body,
+                                 headers={"Content-Type": "application/json", "User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=20) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    if not result.get("ok"):
+        raise RuntimeError(result.get("description", "Ошибка Telegram API"))
+    return result.get("result")
+
+
 def credential_write(target, secret):
     """Store a secret in Windows Credential Manager (Generic Credential)."""
     if not secret:
@@ -127,7 +138,7 @@ class App(tk.Tk):
         ttk.Label(form, text="минут", foreground="#718092").pack(anchor="w")
         ttk.Button(form, text="Искать сейчас", command=self.search).pack(fill="x", pady=(18, 6))
         ttk.Button(form, text="Сохранить настройки", command=self.save).pack(fill="x")
-        ttk.Label(form, text="Telegram: настройка будет добавлена\nпосле получения токена бота.",
+        ttk.Label(form, text="Для связи с ботом сначала отправьте ему /start.",
                   foreground="#718092", wraplength=220).pack(anchor="w", pady=(16, 0))
         connect = ttk.LabelFrame(form, text="Подключения (локально)", padding=10)
         connect.pack(fill="x", pady=(16, 0))
@@ -137,7 +148,8 @@ class App(tk.Tk):
         self.hh_client = ttk.Entry(connect, width=25); self._enable_paste(self.hh_client); self.hh_client.pack(fill="x", pady=(3, 8))
         ttk.Label(connect, text="hh.ru OAuth Client Secret").pack(anchor="w")
         self.hh_secret = ttk.Entry(connect, show="•", width=25); self._enable_paste(self.hh_secret); self.hh_secret.pack(fill="x", pady=(3, 8))
-        ttk.Button(connect, text="Сохранить подключения", command=self.save_connections).pack(fill="x")
+        ttk.Button(connect, text="Сохранить подключения", command=self.save_connections).pack(fill="x", pady=(0, 4))
+        ttk.Button(connect, text="Подключить / проверить Telegram", command=self.connect_telegram).pack(fill="x")
         right = ttk.Frame(body); right.pack(side="left", fill="both", expand=True)
         cards = ttk.Frame(right); cards.pack(fill="x", pady=(0, 12))
         self.count = tk.StringVar(value="0 вакансий")
@@ -189,6 +201,40 @@ class App(tk.Tk):
             self.hh_client.insert(0, creds.get("hh_client_id", ""))
         except (OSError, ValueError):
             pass
+        self.chat_id = self._read_settings().get("telegram_chat_id")
+
+    def _read_settings(self):
+        try:
+            return json.loads(SETTINGS.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def connect_telegram(self):
+        token = self.tg_token.get().strip()
+        if not token:
+            messagebox.showwarning("Telegram", "Вставьте токен бота и сохраните подключения.")
+            return
+        self.save_connections()
+        self.note.set("Проверяю Telegram. Убедитесь, что уже отправили боту /start.")
+        threading.Thread(target=self._connect_telegram_worker, args=(token,), daemon=True).start()
+
+    def _connect_telegram_worker(self, token):
+        try:
+            bot = telegram_call(token, "getMe")
+            updates = telegram_call(token, "getUpdates", {"limit": 100, "allowed_updates": ["message"]})
+            chats = [u.get("message", {}).get("chat", {}) for u in updates
+                     if u.get("message", {}).get("text", "").startswith("/start")]
+            if not chats:
+                raise ValueError("Не нашёл /start от пользователя. Откройте бота в Telegram и отправьте /start, затем повторите подключение.")
+            chat_id = chats[-1].get("id")
+            telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "Telegram подключён к HH Job Helper. Буду присылать новые вакансии."})
+            settings = self._read_settings(); settings["telegram_chat_id"] = chat_id
+            SETTINGS.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.chat_id = chat_id
+            self.after(0, lambda: self.note.set(f"Telegram подключён: @{bot.get('username', 'бот')}. Тестовое сообщение отправлено."))
+        except Exception as exc:
+            message = str(exc)
+            self.after(0, lambda: self.note.set(f"Не удалось подключить Telegram: {message}"))
 
     def save(self):
         APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -235,6 +281,14 @@ class App(tk.Tk):
             self.after(0, lambda: self._error(str(exc)))
 
     def _show(self, items):
+        previous = set(self._read_settings().get("seen_vacancies", []))
+        current_ids = {str(item.get("id")) for item in items if item.get("id")}
+        new_items = [item for item in items if str(item.get("id")) not in previous]
+        if previous and new_items and self.chat_id:
+            threading.Thread(target=self._notify_new, args=(new_items,), daemon=True).start()
+        settings = self._read_settings()
+        settings["seen_vacancies"] = list((previous | current_ids))[-3000:]
+        SETTINGS.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
         self.table.delete(*self.table.get_children())
         for item in items:
             salary = item.get("salary") or {}
@@ -250,6 +304,22 @@ class App(tk.Tk):
         self.count.set(f"{len(items)} вакансий")
         self.state.set("Поиск завершён · реальная выдача hh.ru")
         self.note.set("Отклики не отправлялись. Дважды щёлкните строку для просмотра вакансии.")
+
+    def _notify_new(self, items):
+        try:
+            token = credential_read("HHJobHelper/telegram_bot_token")
+            if not token or not self.chat_id:
+                return
+            for offset in range(0, len(items), 8):
+                batch = items[offset:offset + 8]
+                lines = ["Новые вакансии на hh.ru:"]
+                for item in batch:
+                    url = item.get("alternate_url", "")
+                    lines.append(f"• {item.get('name', 'Вакансия')} — {(item.get('employer') or {}).get('name', 'Компания')}\n{url}")
+                telegram_call(token, "sendMessage", {"chat_id": self.chat_id, "text": "\n\n".join(lines), "disable_web_page_preview": True})
+        except Exception as exc:
+            message = str(exc)
+            self.after(0, lambda: self.note.set(f"Не удалось отправить уведомление Telegram: {message}"))
 
     def _error(self, message):
         self.state.set("Не удалось выполнить поиск")
