@@ -389,7 +389,8 @@ class App(tk.Tk):
             data = fetch_vacancies(params, token)
             self.after(0, lambda: self._show(data.get("items", [])))
         except Exception as exc:
-            self.after(0, lambda: self._error(str(exc)))
+            message = str(exc)
+            self.after(0, lambda message=message: self._error(message))
 
     def _show(self, items):
         terms = {term.casefold() for term in self.role.get().split() if len(term) > 1}
