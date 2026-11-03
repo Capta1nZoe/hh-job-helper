@@ -7,6 +7,7 @@ import json
 import threading
 import urllib.parse
 import urllib.request
+import urllib.error
 import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
@@ -64,8 +65,17 @@ def hh_request(path, token):
     req = urllib.request.Request("https://api.hh.ru" + path,
                                  headers={"User-Agent": UA, "Accept": "application/json",
                                           "Authorization": "Bearer " + token})
-    with urllib.request.urlopen(req, timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        try:
+            details = json.loads(raw)
+            reason = details.get("description") or details.get("errors") or details.get("oauth_error") or raw
+        except ValueError:
+            reason = raw
+        raise RuntimeError(f"HTTP {exc.code}: {reason}") from None
 
 
 def credential_write(target, secret):
