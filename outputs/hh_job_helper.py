@@ -239,10 +239,18 @@ class App(tk.Tk):
             def do_GET(self):
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 if query.get("state", [None])[0] != state:
-                    self.send_response(400); self.end_headers(); self.wfile.write("Проверка авторизации не пройдена.".encode()); return
+                    self.send_response(400)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write("<meta charset='utf-8'><h2>Проверка OAuth не пройдена</h2><p>Параметр state не совпал. Закройте приложение и начните вход заново из его окна.</p>".encode("utf-8"))
+                    return
                 code = query.get("code", [None])[0]
                 if not code:
-                    self.send_response(400); self.end_headers(); self.wfile.write("hh.ru не вернул код авторизации.".encode()); return
+                    self.send_response(400)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write("<meta charset='utf-8'><h2>hh.ru не вернул код авторизации</h2><p>Вернитесь в приложение и начните вход заново.</p>".encode("utf-8"))
+                    return
                 try:
                     payload = urllib.parse.urlencode({"grant_type":"authorization_code", "client_id":client_id,
                         "client_secret":client_secret, "code":code, "redirect_uri":redirect_uri,
